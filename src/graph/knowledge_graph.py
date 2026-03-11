@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import networkx as nx
 
-from src.models.edges import BaseEdge, EdgeType
+from src.models.edges import BaseEdge, EdgeType, ImportsEdge, ProducesEdge, ConsumesEdge, CallsEdge, ConfiguresEdge
 from src.models.nodes import (
     BaseNode,
     DatasetNode,
@@ -54,6 +54,25 @@ class KnowledgeGraph:
         self._graph.add_node(node.node_id, data=node)
         logger.debug("node_added", node_id=node.node_id, type=type(node).__name__)
 
+    def remove_node(self, node_id: str) -> None:
+        """Remove a node and all attached edges, if it exists."""
+        if node_id in self._graph:
+            self._graph.remove_node(node_id)
+            logger.debug("node_removed", node_id=node_id)
+
+    def remove_nodes_by_predicate(self, predicate: Callable[[BaseNode], bool]) -> int:
+        """Remove all nodes for which *predicate* returns True. Returns count."""
+        to_remove: list[str] = []
+        for node_id, data in self._graph.nodes(data=True):
+            node = data.get("data")
+            if isinstance(node, BaseNode) and predicate(node):
+                to_remove.append(node_id)
+        for node_id in to_remove:
+            self._graph.remove_node(node_id)
+        if to_remove:
+            logger.debug("nodes_removed_by_predicate", count=len(to_remove))
+        return len(to_remove)
+
     def get_node(self, node_id: str) -> NodeType | None:
         """Retrieve a node by its ID, or None if not found."""
         if node_id not in self._graph:
@@ -78,6 +97,54 @@ class KnowledgeGraph:
             edge_type=edge.edge_type.value,
             data=edge,
         )
+
+    def remove_edges_by_type(self, edge_type: EdgeType) -> int:
+        """Remove all edges of the given *edge_type*. Returns count."""
+        to_remove: list[tuple[str, str]] = []
+        for u, v, data in self._graph.edges(data=True):
+            if data.get("edge_type") == edge_type.value:
+                to_remove.append((u, v))
+            else:
+                edge = data.get("data")
+                if isinstance(edge, BaseEdge) and edge.edge_type == edge_type:
+                    to_remove.append((u, v))
+        for u, v in to_remove:
+            if self._graph.has_edge(u, v):
+                self._graph.remove_edge(u, v)
+        if to_remove:
+            logger.debug("edges_removed_by_type", edge_type=edge_type.value, count=len(to_remove))
+        return len(to_remove)
+
+    def remove_edges_by_source_file(self, source_file: str) -> int:
+        """Remove edges whose metadata source_file matches *source_file*."""
+        to_remove: list[tuple[str, str]] = []
+        for u, v, data in self._graph.edges(data=True):
+            edge = data.get("data")
+            edge_source = None
+            if isinstance(edge, BaseEdge):
+                edge_source = getattr(edge, "source_file", None)
+            if edge_source == source_file:
+                to_remove.append((u, v))
+        for u, v in to_remove:
+            if self._graph.has_edge(u, v):
+                self._graph.remove_edge(u, v)
+        if to_remove:
+            logger.debug("edges_removed_by_source_file", source_file=source_file, count=len(to_remove))
+        return len(to_remove)
+
+    def prune_orphan_datasets(self) -> int:
+        """Remove DatasetNodes with no connected edges. Returns count removed."""
+        to_remove: list[str] = []
+        for node_id, data in self._graph.nodes(data=True):
+            node = data.get("data")
+            if isinstance(node, DatasetNode):
+                if self._graph.in_degree(node_id) == 0 and self._graph.out_degree(node_id) == 0:
+                    to_remove.append(node_id)
+        for node_id in to_remove:
+            self._graph.remove_node(node_id)
+        if to_remove:
+            logger.debug("orphan_datasets_removed", count=len(to_remove))
+        return len(to_remove)
 
     def edges_from(self, node_id: str) -> list[BaseEdge]:
         return [
@@ -142,27 +209,39 @@ class KnowledgeGraph:
 
     def to_dict(self) -> dict[str, Any]:
         """
-        Serialise the graph to a JSON-compatible dict using NetworkX's
-        node-link format, extended with Pydantic model data.
+        Serialise the graph to a JSON-compatible dict with typed node/edge data.
         """
-        node_link = nx.node_link_data(self._graph)
+        nodes: list[dict[str, Any]] = []
+        edges: list[dict[str, Any]] = []
 
-        # Enrich nodes with Pydantic model data
-        enriched_nodes = []
-        for node_entry in node_link.get("nodes", []):
-            nid = node_entry["id"]
-            node_data = self._graph.nodes[nid].get("data")
+        for node_id, data in self._graph.nodes(data=True):
+            node_data = data.get("data")
             if node_data is not None:
-                enriched_nodes.append({
-                    "id": nid,
+                nodes.append({
+                    "id": node_id,
                     "type": type(node_data).__name__,
                     **node_data.model_dump(mode="json"),
                 })
             else:
-                enriched_nodes.append(node_entry)
+                nodes.append({"id": node_id})
 
-        node_link["nodes"] = enriched_nodes
-        return node_link
+        for u, v, data in self._graph.edges(data=True):
+            edge_data = data.get("data")
+            if edge_data is not None:
+                edges.append({
+                    "source": u,
+                    "target": v,
+                    "type": edge_data.edge_type.value,
+                    **edge_data.model_dump(mode="json"),
+                })
+            else:
+                edges.append({
+                    "source": u,
+                    "target": v,
+                    "type": data.get("edge_type", ""),
+                })
+
+        return {"nodes": nodes, "edges": edges}
 
     def save(self, path: Path) -> None:
         """Write the graph to *path* as JSON."""
@@ -178,11 +257,57 @@ class KnowledgeGraph:
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
         kg = cls()
-        # Minimal reconstruction: restore graph topology (without typed models)
+        node_type_map = {
+            "ModuleNode": ModuleNode,
+            "DatasetNode": DatasetNode,
+            "FunctionNode": FunctionNode,
+            "TransformationNode": TransformationNode,
+        }
+        edge_type_map = {
+            EdgeType.IMPORTS.value: ImportsEdge,
+            EdgeType.PRODUCES.value: ProducesEdge,
+            EdgeType.CONSUMES.value: ConsumesEdge,
+            EdgeType.CALLS.value: CallsEdge,
+            EdgeType.CONFIGURES.value: ConfiguresEdge,
+        }
+
         for node in data.get("nodes", []):
-            kg._graph.add_node(node["id"])
-        for link in data.get("links", []):
-            kg._graph.add_edge(link["source"], link["target"])
+            node_id = node.get("id") or node.get("node_id")
+            node_type = node.get("type")
+            if node_type in node_type_map:
+                payload = {k: v for k, v in node.items() if k not in {"id", "type"}}
+                if "node_id" not in payload and node_id:
+                    payload["node_id"] = node_id
+                try:
+                    model = node_type_map[node_type](**payload)
+                    kg.add_node(model)
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("node_reconstruct_failed", node_id=node_id, error=str(exc))
+            if node_id:
+                kg._graph.add_node(node_id)
+
+        # Backward compatibility: accept "links" from legacy node-link format
+        edges = data.get("edges", []) or data.get("links", [])
+        for edge in edges:
+            edge_type = edge.get("type") or edge.get("edge_type")
+            if edge_type in edge_type_map:
+                payload = {k: v for k, v in edge.items() if k not in {"type"}}
+                if "source_id" not in payload and edge.get("source"):
+                    payload["source_id"] = edge.get("source")
+                if "target_id" not in payload and edge.get("target"):
+                    payload["target_id"] = edge.get("target")
+                try:
+                    model = edge_type_map[edge_type](**payload)
+                    kg.add_edge(model)
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("edge_reconstruct_failed", error=str(exc))
+            # Fallback: add topology only
+            source = edge.get("source") or edge.get("source_id")
+            target = edge.get("target") or edge.get("target_id")
+            if source and target:
+                kg._graph.add_edge(source, target)
         logger.info("graph_loaded", path=str(path))
         return kg
 

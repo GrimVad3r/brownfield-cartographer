@@ -129,20 +129,32 @@ class Hydrologist:
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
-    def analyse(self, repo_path: Path) -> dict[str, Any]:
+    def analyse(self, repo_path: Path, only_files: set[str] | None = None) -> dict[str, Any]:
         logger.info("hydrologist_started", repo=str(repo_path))
 
         py_findings:   list[dict[str, Any]]  = []
         sql_deps:      list[TableDependency] = []
         config_edges:  list[PipelineEdge]    = []
 
-        # ── Walk repository ───────────────────────────────────────────────────
-        for fpath in sorted(repo_path.rglob("*")):
+        # ?????? Walk repository ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+        if only_files:
+            file_iter = [repo_path / f for f in sorted(only_files)]
+        else:
+            file_iter = sorted(repo_path.rglob("*"))
+
+        for fpath in file_iter:
             if not fpath.is_file():
                 continue
             # Skip hidden directories
             if any(part.startswith(".") for part in fpath.parts):
                 continue
+
+            rel_path = str(fpath.relative_to(repo_path))
+            if only_files:
+                self._graph.remove_edges_by_source_file(rel_path)
+                self._graph.remove_nodes_by_predicate(
+                    lambda n: isinstance(n, TransformationNode) and n.source_file == rel_path
+                )
 
             ext = fpath.suffix.lower()
 
@@ -151,15 +163,17 @@ class Hydrologist:
                 config_edges.extend(self._dag_cfg.analyse(fpath))
 
             elif ext == ".sql":
-                sql_deps.extend(self._sql_lin.analyse_file(fpath))
+                sql_deps.extend(self._sql_lin.analyse_file(fpath, repo_root=repo_path))
 
             elif ext in {".yaml", ".yml"}:
                 config_edges.extend(self._dag_cfg.analyse(fpath))
 
         # ── Populate knowledge graph ──────────────────────────────────────────
         self._ingest_python_findings(py_findings)
-        self._ingest_sql_dependencies(sql_deps)
-        self._ingest_config_edges(config_edges)
+        self._ingest_sql_dependencies(sql_deps, repo_path)
+        self._ingest_config_edges(config_edges, repo_path)
+        if only_files:
+            self._graph.prune_orphan_datasets()
 
         summary = {
             "python_dataflow_refs": len(py_findings),
@@ -221,18 +235,19 @@ class Hydrologist:
                 )
             self._graph.add_edge(edge)
 
-    def _ingest_sql_dependencies(self, deps: list[TableDependency]) -> None:
+    def _ingest_sql_dependencies(self, deps: list[TableDependency], repo_path: Path) -> None:
         for dep in deps:
             src_dataset  = self._get_or_create_dataset(dep.source_table, "table")
             tgt_dataset  = self._get_or_create_dataset(dep.target_table, "table")
-            t_id = f"transform:{dep.source_file}:{dep.line_number}:sql"
+            source_file = self._normalise_source_file(dep.source_file, repo_path)
+            t_id = f"transform:{source_file}:{dep.line_number}:sql"
 
             # Create or reuse transformation node for this SQL model
             if self._graph.get_node(t_id) is None:
                 transform = TransformationNode(
                     node_id=t_id,
                     transformation_type=TransformationType.TRANSFORM,
-                    source_file=dep.source_file,
+                    source_file=source_file,
                     line_range=(dep.line_number, dep.line_number),
                     source_datasets=[dep.source_table],
                     target_datasets=[dep.target_table],
@@ -244,28 +259,36 @@ class Hydrologist:
             consumes = ConsumesEdge(
                 source_id=t_id,
                 target_id=src_dataset.node_id,
-                source_file=dep.source_file,
+                source_file=source_file,
                 line_range=(dep.line_number, dep.line_number),
             )
             # transformation → target_dataset
             produces = ProducesEdge(
                 source_id=t_id,
                 target_id=tgt_dataset.node_id,
-                source_file=dep.source_file,
+                source_file=source_file,
                 line_range=(dep.line_number, dep.line_number),
             )
             self._graph.add_edge(consumes)
             self._graph.add_edge(produces)
 
-    def _ingest_config_edges(self, edges: list[PipelineEdge]) -> None:
-        from src.models.edges import ImportsEdge
+    def _normalise_source_file(self, source_file: str, repo_path: Path) -> str:
+        try:
+            p = Path(source_file)
+            if p.is_absolute():
+                return str(p.relative_to(repo_path))
+        except Exception:
+            pass
+        return source_file
+
+    def _ingest_config_edges(self, edges: list[PipelineEdge], repo_path: Path) -> None:
         for e in edges:
             up   = self._get_or_create_dataset(e.upstream,   "table")
             down = self._get_or_create_dataset(e.downstream, "table")
             edge = ProducesEdge(
                 source_id=up.node_id,
                 target_id=down.node_id,
-                source_file=e.source_file,
+                source_file=self._normalise_source_file(e.source_file, repo_path),
             )
             self._graph.add_edge(edge)
 

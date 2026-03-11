@@ -15,6 +15,7 @@ Branch: feature/09-cli-orchestrator
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -30,6 +31,7 @@ from src.agents.semanticist import Semanticist
 from src.agents.surveyor import Surveyor
 from src.graph.knowledge_graph import KnowledgeGraph
 from src.models.graph import CartographyRun, Settings
+from src.models.nodes import FunctionNode
 from src.utils.logging_config import get_logger
 from src.utils.security import (
     SecurityError,
@@ -53,7 +55,7 @@ class Orchestrator:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def run_full(self, target: str, output_dir: Path | None = None) -> CartographyRun:
+    def run_full(self, target: str, output_dir: Path | None = None, incremental: bool = False) -> CartographyRun:
         """
         Execute the full analysis pipeline on *target*
         (local path or GitHub URL).
@@ -77,17 +79,55 @@ class Orchestrator:
         run.repo_path   = str(repo_path)
         run.git_commit  = self._get_head_commit(repo_path)
 
-        graph    = KnowledgeGraph()
+        output_dir_path = output_dir or Path(".cartography")
+        only_files: set[str] | None = None
+        deleted_files: set[str] = set()
+        full_analysis = True
+
+        if incremental:
+            manifest_path = output_dir_path / "run_manifest.json"
+            last_commit = None
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    last_commit = manifest.get("git_commit")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("incremental_manifest_read_failed", error=str(exc))
+            if last_commit:
+                diff = self.get_changed_files_since_last_run(repo_path, last_commit)
+                only_files = set(diff.get("changed", []))
+                deleted_files = set(diff.get("deleted", []))
+                if not only_files and not deleted_files:
+                    logger.info("incremental_no_changes")
+                    full_analysis = False
+            else:
+                logger.info("incremental_no_manifest_running_full")
+
+        graph_path = output_dir_path / "module_graph.json"
+        if incremental and graph_path.exists():
+            graph = KnowledgeGraph.load(graph_path)
+        else:
+            graph = KnowledgeGraph()
+
+        if deleted_files:
+            for rel_path in deleted_files:
+                graph.remove_node(rel_path)
+                graph.remove_nodes_by_predicate(
+                    lambda n: isinstance(n, FunctionNode) and n.parent_module == rel_path
+                )
+
         budget   = ContextWindowBudget(
             bulk_model=self._settings.bulk_llm_model,
             synthesis_model=self._settings.synthesis_llm_model,
         )
-        archivist = Archivist(graph, output_dir=(output_dir or Path(".cartography")))
+        archivist = Archivist(graph, output_dir=output_dir_path)
 
         # ── Phase 1: Surveyor ─────────────────────────────────────────────────
         archivist.log_trace("phase_start", "orchestrator", {"phase": "surveyor"})
         try:
-            surveyor_summary = Surveyor(graph).analyse(repo_path)
+            if not full_analysis:
+                raise RuntimeError("incremental_no_changes")
+            surveyor_summary = Surveyor(graph).analyse(repo_path, only_files=only_files if incremental else None)
             run.total_files_analysed += surveyor_summary.get("files_analysed", 0)
             run.total_files_skipped  += surveyor_summary.get("files_skipped", 0)
             run.phases_completed.append("surveyor")
@@ -95,34 +135,48 @@ class Orchestrator:
                 "phase": "surveyor", **surveyor_summary
             })
         except Exception as exc:  # noqa: BLE001
-            logger.error("surveyor_phase_failed", error=str(exc))
-            run.errors.append(f"Surveyor: {exc}")
+            if str(exc) == "incremental_no_changes":
+                logger.info("surveyor_skipped_incremental_no_changes")
+            else:
+                logger.error("surveyor_phase_failed", error=str(exc))
+                run.errors.append(f"Surveyor: {exc}")
 
         # ── Phase 2: Hydrologist ──────────────────────────────────────────────
         archivist.log_trace("phase_start", "orchestrator", {"phase": "hydrologist"})
         try:
-            hydro_summary = Hydrologist(graph).analyse(repo_path)
+            if not full_analysis:
+                raise RuntimeError("incremental_no_changes")
+            hydro_summary = Hydrologist(graph).analyse(repo_path, only_files=only_files if incremental else None)
             run.phases_completed.append("hydrologist")
             archivist.log_trace("phase_complete", "orchestrator", {
                 "phase": "hydrologist", **hydro_summary
             })
         except Exception as exc:  # noqa: BLE001
-            logger.error("hydrologist_phase_failed", error=str(exc))
-            run.errors.append(f"Hydrologist: {exc}")
+            if str(exc) == "incremental_no_changes":
+                logger.info("hydrologist_skipped_incremental_no_changes")
+            else:
+                logger.error("hydrologist_phase_failed", error=str(exc))
+                run.errors.append(f"Hydrologist: {exc}")
 
         # ── Phase 3: Semanticist ──────────────────────────────────────────────
         if self._settings.has_llm():
-            archivist.log_trace("phase_start", "orchestrator", {"phase": "semanticist"})
-            try:
-                sem_summary = Semanticist(graph, self._settings, budget).analyse(repo_path)
-                run.phases_completed.append("semanticist")
-                run.llm_cost_usd += budget.summary.get("total_cost_usd", 0.0)
-                archivist.log_trace("phase_complete", "orchestrator", {
-                    "phase": "semanticist", **sem_summary
-                })
-            except Exception as exc:  # noqa: BLE001
-                logger.error("semanticist_phase_failed", error=str(exc))
-                run.errors.append(f"Semanticist: {exc}")
+            if not full_analysis:
+                logger.info("semanticist_skipped_incremental_no_changes")
+            else:
+                archivist.log_trace("phase_start", "orchestrator", {"phase": "semanticist"})
+                try:
+                    sem_summary = Semanticist(graph, self._settings, budget).analyse(
+                        repo_path,
+                        only_modules=only_files if incremental else None,
+                    )
+                    run.phases_completed.append("semanticist")
+                    run.llm_cost_usd += budget.summary.get("total_cost_usd", 0.0)
+                    archivist.log_trace("phase_complete", "orchestrator", {
+                        "phase": "semanticist", **sem_summary
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("semanticist_phase_failed", error=str(exc))
+                    run.errors.append(f"Semanticist: {exc}")
         else:
             logger.warning(
                 "semanticist_skipped",
@@ -250,18 +304,31 @@ class Orchestrator:
 
     def get_changed_files_since_last_run(
         self, repo_path: Path, last_commit: str
-    ) -> list[str]:
+    ) -> dict[str, list[str]]:
         """
-        Return a list of files changed between *last_commit* and HEAD.
+        Return changed/deleted files between *last_commit* and HEAD.
         Used for incremental update mode.
         """
+        changed: list[str] = []
+        deleted: list[str] = []
         try:
             result = subprocess.run(  # noqa: S603
-                ["git", "-C", str(repo_path), "diff", "--name-only", last_commit, "HEAD"],
+                ["git", "-C", str(repo_path), "diff", "--name-status", last_commit, "HEAD"],
                 capture_output=True, text=True, timeout=30,
             )
             if result.returncode == 0:
-                return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+                for line in result.stdout.splitlines():
+                    if not line.strip():
+                        continue
+                    parts = line.split("\t")
+                    status = parts[0]
+                    if status.startswith("D") and len(parts) > 1:
+                        deleted.append(parts[1].strip())
+                    elif status.startswith("R") and len(parts) > 2:
+                        deleted.append(parts[1].strip())
+                        changed.append(parts[2].strip())
+                    elif len(parts) > 1:
+                        changed.append(parts[1].strip())
         except Exception as exc:  # noqa: BLE001
             logger.debug("incremental_diff_failed", error=str(exc))
-        return []
+        return {"changed": changed, "deleted": deleted}

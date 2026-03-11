@@ -29,8 +29,8 @@ import networkx as nx
 
 from src.analyzers.tree_sitter_analyzer import LanguageRouter
 from src.graph.knowledge_graph import KnowledgeGraph
-from src.models.edges import ImportsEdge
-from src.models.nodes import Language, ModuleNode
+from src.models.edges import ImportsEdge, EdgeType
+from src.models.nodes import FunctionNode, Language, ModuleNode
 from src.utils.logging_config import get_logger
 from src.utils.security import DEFAULT_MAX_DEPTH, is_safe_file
 
@@ -54,7 +54,7 @@ class Surveyor:
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
-    def analyse(self, repo_path: Path) -> dict[str, Any]:
+    def analyse(self, repo_path: Path, only_files: set[str] | None = None) -> dict[str, Any]:
         """
         Run the full Surveyor analysis on *repo_path*.
 
@@ -66,8 +66,23 @@ class Surveyor:
         files_skipped   = 0
         parse_errors    = 0
 
-        # ── Step 1: Walk and parse every file ─────────────────────────────────
-        for fpath in self._iter_source_files(repo_path):
+        # ?????? Step 1: Walk and parse every file ???????????????????????????????????????????????????????????????????????????????????????????????????
+        if only_files:
+            file_iter = [repo_path / f for f in sorted(only_files)]
+        else:
+            file_iter = self._iter_source_files(repo_path)
+
+        for fpath in file_iter:
+            if not fpath.is_file():
+                continue
+            rel_path = str(fpath.relative_to(repo_path))
+
+            # Remove stale function nodes for this module (incremental mode)
+            self._graph.remove_nodes_by_predicate(
+                lambda n: isinstance(n, FunctionNode) and n.parent_module == rel_path
+            )
+            self._graph.remove_node(rel_path)
+
             node = self._router.analyse_file(fpath, repo_path)
             if node is None:
                 files_skipped += 1
@@ -82,9 +97,12 @@ class Surveyor:
                 )
 
             self._graph.add_node(node)
+            for fn in self._router.extract_functions(fpath, repo_path):
+                self._graph.add_node(fn)
             files_analysed += 1
 
         # ── Step 2: Build import edges ─────────────────────────────────────────
+        self._graph.remove_edges_by_type(EdgeType.IMPORTS)
         self._build_import_edges(repo_path)
 
         # ── Step 3: Git velocity ───────────────────────────────────────────────
@@ -149,6 +167,7 @@ class Surveyor:
         # Build a lookup: module-stem → node_id
         stem_map: dict[str, str] = {}
         for node in self._graph.all_nodes_of_type(ModuleNode):
+            node.is_dead_code_candidate = False
             stem = Path(node.path).stem
             stem_map[stem] = node.node_id
 
@@ -246,6 +265,7 @@ class Surveyor:
 
         flagged = 0
         for node in self._graph.all_nodes_of_type(ModuleNode):
+            node.is_dead_code_candidate = False
             stem = Path(node.path).stem
             if stem in entry_point_names:
                 continue

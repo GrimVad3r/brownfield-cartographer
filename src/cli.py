@@ -117,7 +117,7 @@ def analyze(
 
     # ── Run ───────────────────────────────────────────────────────────────────
     with console.status("[bold green]Analysing…[/bold green]", spinner="dots"):
-        run = orchestrator.run_full(target, output_dir=output_dir)
+        run = orchestrator.run_full(target, output_dir=output_dir, incremental=incremental)
 
     # ── Summary table ─────────────────────────────────────────────────────────
     table = Table(title="Analysis Summary", show_header=True, header_style="bold magenta")

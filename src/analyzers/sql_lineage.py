@@ -56,6 +56,7 @@ class SQLLineageAnalyzer:
         path: Path,
         model_name: str | None = None,
         dialect: str = "",
+        repo_root: Path | None = None,
     ) -> list[TableDependency]:
         """
         Parse *path* and return a list of TableDependency objects.
@@ -87,12 +88,20 @@ class SQLLineageAnalyzer:
         clean_sql = _DBT_REF_RE.sub(lambda m: m.group(1), raw_sql)
         clean_sql = _DBT_SRC_RE.sub(lambda m: f"{m.group(1)}__{m.group(2)}", clean_sql)
 
+        # Resolve source_file path
+        source_file = str(path)
+        if repo_root:
+            try:
+                source_file = str(path.relative_to(repo_root))
+            except Exception:  # noqa: BLE001
+                source_file = str(path)
+
         # Add dbt-resolved dependencies directly
         for ref_name in dbt_refs:
             deps.append(TableDependency(
                 source_table=ref_name,
                 target_table=target,
-                source_file=str(path),
+                source_file=source_file,
                 line_number=0,
                 dialect="dbt",
             ))
@@ -100,20 +109,20 @@ class SQLLineageAnalyzer:
             deps.append(TableDependency(
                 source_table=src,
                 target_table=target,
-                source_file=str(path),
+                source_file=source_file,
                 line_number=0,
                 dialect="dbt_source",
             ))
 
         # ── sqlglot AST analysis ────────────────────────────────────────────
-        parsed_tables = self._extract_with_sqlglot(clean_sql, dialect, str(path))
+        parsed_tables = self._extract_with_sqlglot(clean_sql, dialect, source_file)
         for tbl, lineno in parsed_tables:
             # Don't double-count dbt refs already captured
             if tbl not in dbt_refs:
                 deps.append(TableDependency(
                     source_table=tbl,
                     target_table=target,
-                    source_file=str(path),
+                    source_file=source_file,
                     line_number=lineno,
                     dialect=dialect or "generic",
                 ))

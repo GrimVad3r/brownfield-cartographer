@@ -26,7 +26,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.graph.knowledge_graph import KnowledgeGraph
 from src.models.graph import DayOneAnswers, Settings
-from src.models.nodes import DomainCluster, ModuleNode
+from src.models.nodes import DomainCluster, FunctionNode, ModuleNode
 from src.utils.logging_config import get_logger
 from src.utils.token_budget import BudgetExceededError, ContextWindowBudget
 
@@ -84,10 +84,13 @@ class Semanticist:
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
-    def analyse(self, repo_path: Path) -> dict[str, Any]:
+    def analyse(self, repo_path: Path, only_modules: set[str] | None = None) -> dict[str, Any]:
         logger.info("semanticist_started")
 
         modules = self._graph.all_nodes_of_type(ModuleNode)
+        if only_modules:
+            modules = [m for m in modules if m.path in only_modules]
+
         purpose_generated = 0
         drift_flagged     = 0
 
@@ -105,12 +108,30 @@ class Semanticist:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("purpose_statement_failed", module=module.path, error=str(exc))
 
+
+        # Function-level purpose statements (Python only for now)
+        functions = self._graph.all_nodes_of_type(FunctionNode)
+        if only_modules:
+            functions = [f for f in functions if f.parent_module in only_modules]
+
+        function_purpose_generated = 0
+        for fn in functions:
+            try:
+                self._generate_function_purpose_statement(fn, repo_path)
+                function_purpose_generated += 1
+            except BudgetExceededError as exc:
+                logger.error("budget_exceeded_halting_semanticist", error=str(exc))
+                break
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("function_purpose_failed", function=fn.qualified_name, error=str(exc))
+
         # Domain clustering
         self._cluster_into_domains()
 
         summary = {
             "purpose_statements_generated": purpose_generated,
             "documentation_drift_flags":    drift_flagged,
+            "function_purposes_generated":   function_purpose_generated,
         }
 
         self._budget.log_summary()
@@ -158,6 +179,58 @@ class Semanticist:
                     module=module.path,
                     detail=str(drift)[:120],
                 )
+
+    def _generate_function_purpose_statement(self, fn: FunctionNode, repo_path: Path) -> None:
+        """Generate and attach a Purpose Statement to a FunctionNode."""
+        source_path = repo_path / fn.parent_module
+        try:
+            source = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+
+        snippet = self._extract_function_source(source, fn.start_line, fn.end_line)
+
+        if self._client is None:
+            fn.purpose_statement = (
+                f"Function '{fn.qualified_name}' in {fn.parent_module}. "
+                "[LLM analysis unavailable — configure an API key for full semantic analysis]"
+            )
+            return
+
+        prompt = self._build_function_prompt(snippet, fn.qualified_name, fn.parent_module)
+        response = self._call_llm(prompt, tier="bulk")
+        if response:
+            parsed = self._safe_parse_json(response)
+            fn.purpose_statement = parsed.get("purpose_statement", response[:500])
+
+    @staticmethod
+    def _extract_function_source(source: str, start_line: int, end_line: int) -> str:
+        lines = source.splitlines()
+        if start_line <= 0:
+            return "\n".join(lines[:50])
+        if end_line <= start_line:
+            end_line = min(start_line + 20, len(lines))
+        end_line = min(end_line, len(lines))
+        return "\n".join(lines[start_line - 1:end_line])
+
+    @staticmethod
+    def _build_function_prompt(snippet: str, qualified_name: str, module_path: str) -> str:
+        truncated = snippet[:3000] + ("\n... [truncated]" if len(snippet) > 3000 else "")
+        return f"""Analyse this function and return a JSON object with one field:
+
+1. \"purpose_statement\": A 1-2 sentence description of what this function DOES (business effect),
+   not how it does it, grounded entirely in the code below.
+
+Function: {qualified_name}
+Module: {module_path}
+
+Source code:
+```
+{truncated}
+```
+
+Return ONLY valid JSON. No preamble, no markdown fences."""
+
 
     @staticmethod
     def _build_purpose_prompt(source: str, path: str, docstring: str) -> str:

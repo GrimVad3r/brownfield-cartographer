@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from src.graph.knowledge_graph import KnowledgeGraph
+from src.graph.semantic_index import SemanticIndex
 from src.models.graph import CartographyRun, DayOneAnswers
 from src.models.nodes import DatasetNode, DomainCluster, ModuleNode
 from src.utils.logging_config import get_logger
@@ -93,6 +94,7 @@ class Archivist:
         artifacts.append(self._write_onboarding_brief(run, day_one_answers))
         artifacts.append(self._write_lineage_graph())
         artifacts.append(self._write_module_graph())
+        artifacts.append(self._write_semantic_index())
         artifacts.append(self._write_run_manifest(run))
 
         logger.info(
@@ -347,6 +349,12 @@ class Archivist:
         path = self._output_dir / "module_graph.json"
         self._graph.save(path)
         self.log_trace("serialise_module_graph", "archivist", {"path": str(path)})
+        return path
+
+    def _write_semantic_index(self) -> Path:
+        index = SemanticIndex(self._output_dir)
+        path = index.build(self._graph)
+        self.log_trace("build_semantic_index", "archivist", {"path": str(path)})
         return path
 
     def _write_run_manifest(self, run: CartographyRun) -> Path:

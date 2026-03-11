@@ -186,6 +186,7 @@ All artifacts are written to `.cartography/` (git-ignored):
 | `onboarding_brief.md` | Day-One Brief: Five FDE questions with evidence |
 | `module_graph.json` | Serialised module import graph (NetworkX) |
 | `lineage_graph.json` | Data lineage DAG (NetworkX) |
+| `semantic_index/` | Vector index of module/function purpose statements |
 | `cartography_trace.jsonl` | Audit log of every analysis action |
 | `run_manifest.json` | Run metadata, stats, errors |
 

@@ -84,6 +84,8 @@ class NavigatorTools:
                 "purpose":          m.purpose_statement or "(no purpose statement)",
                 "exported_symbols": m.exported_symbols[:8],
                 "relevance_score":  s,
+                "source_file":      m.path,
+                "line_range":       (1, max(1, m.lines_of_code)),
                 "evidence_source":  "static_analysis + purpose_statement",
             }
             for s, m in top
@@ -186,6 +188,17 @@ class NavigatorTools:
                     break
 
         affected = self._graph.blast_radius(module_path)
+        enriched: list[dict[str, Any]] = []
+        for rid in affected[:30]:
+            node = self._graph.get_node(rid)
+            entry: dict[str, Any] = {"node_id": rid, "type": type(node).__name__ if node else "unknown"}
+            edges = self._graph.edges_to(rid)
+            if edges:
+                edge_data = edges[0].model_dump()
+                entry["source_file"] = edge_data.get("source_file", "")
+                entry["line_range"] = edge_data.get("line_range", (0, 0))
+            entry["evidence_source"] = "graph_traversal"
+            enriched.append(entry)
 
         logger.info(
             "blast_radius_query",
@@ -194,7 +207,7 @@ class NavigatorTools:
         )
         return {
             "module":         module_path,
-            "affected_nodes": affected[:30],
+            "affected_nodes": enriched,
             "total_affected": len(affected),
             "risk_level":     "HIGH" if len(affected) > 10 else "MEDIUM" if affected else "LOW",
             "evidence_source": "graph_traversal",
@@ -234,6 +247,8 @@ class NavigatorTools:
             "has_doc_drift":     node.has_docstring_drift,
             "change_velocity_30d": node.change_velocity_30d,
             "change_velocity_90d": node.change_velocity_90d,
+            "source_file":       node.path,
+            "line_range":        (1, max(1, node.lines_of_code)),
             "evidence_source":   "static_analysis",
         }
 
@@ -276,6 +291,33 @@ class Navigator:
             )
         method = getattr(self._tools, self._TOOL_DISPATCH[tool])
         return method(**kwargs)
+
+    def build_langgraph(self):
+        """
+        Build and return a minimal LangGraph pipeline for tool dispatch.
+        """
+        try:
+            from typing import TypedDict
+            from langgraph.graph import StateGraph, END
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("langgraph is not installed") from exc
+
+        class QueryState(TypedDict, total=False):
+            tool: str
+            args: dict[str, Any]
+            result: dict[str, Any]
+
+        def run_tool(state: QueryState) -> QueryState:
+            tool = state.get("tool", "")
+            args = state.get("args", {}) or {}
+            result = self.query(tool, **args)
+            return {"result": result}
+
+        graph = StateGraph(QueryState)
+        graph.add_node("run_tool", run_tool)
+        graph.set_entry_point("run_tool")
+        graph.add_edge("run_tool", END)
+        return graph.compile()
 
     def interactive_loop(self) -> None:
         """Start a simple REPL query loop (for CLI `query` subcommand)."""
