@@ -273,17 +273,21 @@ class DAGConfigAnalyzer:
         ext = path.suffix.lower()
         edges: list[PipelineEdge] = []
 
-        if ext == ".py":
-            topology = self._airflow.parse(path)
-            if topology:
-                edges.extend(topology.edges)
+        try:
+            if ext == ".py":
+                topology = self._airflow.parse(path)
+                if topology:
+                    edges.extend(topology.edges)
 
-        elif ext in {".yaml", ".yml"}:
-            # Try dbt-specific first, then generic
-            self._dbt.parse(path)   # side-effect: logs metadata
-            topology = self._generic.parse(path)
-            if topology:
-                edges.extend(topology.edges)
+            elif ext in {".yaml", ".yml"}:
+                # Try dbt-specific first, then generic
+                self._dbt.parse(path)   # side-effect: logs metadata
+                topology = self._generic.parse(path)
+                if topology:
+                    edges.extend(topology.edges)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dag_config_parse_failed", path=str(path), error=str(exc))
+            return []
 
         return edges
 

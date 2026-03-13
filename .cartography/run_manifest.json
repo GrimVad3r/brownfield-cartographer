@@ -1,17 +1,16 @@
 {
-  "run_id": "698430a7-4200-405f-8363-7ed98a585de6",
-  "repo_path": "C:\\Users\\henokt\\AppData\\Local\\Temp\\cartographer_3eb9jl08",
-  "started_at": "2026-03-13T14:29:37.039016Z",
-  "finished_at": "2026-03-13T14:30:25.532967Z",
-  "git_commit": "e149b8017fc09c97111e58cb44dbcec29b65a86b",
+  "run_id": "03e0b8f7-572c-4367-98fb-a9f643e46875",
+  "repo_path": "C:\\Users\\henokt\\AppData\\Local\\Temp\\cartographer_wl2qpp1h",
+  "started_at": "2026-03-13T15:38:35.331396Z",
+  "finished_at": "2026-03-13T15:39:35.015962Z",
+  "git_commit": "19f03ea69f72f58f84a7a625b8bf759250b85127",
   "total_files_analysed": 1107,
   "total_files_skipped": 102,
   "phases_completed": [
-    "surveyor"
+    "surveyor",
+    "hydrologist"
   ],
-  "errors": [
-    "Hydrologist: 'str' object has no attribute 'get'"
-  ],
+  "errors": [],
   "llm_cost_usd": 0.0,
   "output_dir": ".cartography"
 }

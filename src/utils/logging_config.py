@@ -10,6 +10,7 @@ Branch: feature/01-project-setup
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any
 
@@ -69,6 +70,19 @@ def configure_logging(log_level: str = "INFO", log_format: str = "console") -> N
     root_logger.handlers.clear()
     root_logger.addHandler(handler)
     root_logger.setLevel(level)
+
+    # Reduce noisy SQL parsing logs unless explicitly enabled.
+    sqlglot_level = os.getenv("SQLGLOT_LOG_LEVEL", "CRITICAL").upper()
+    sqlglot_logger = logging.getLogger("sqlglot")
+    sqlglot_logger.setLevel(getattr(logging, sqlglot_level, logging.CRITICAL))
+
+    suppress_sqlglot = os.getenv("SQLGLOT_LOG_SUPPRESS", "1") != "0"
+    if suppress_sqlglot:
+        class _SqlglotFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+                return not record.name.startswith("sqlglot")
+
+        handler.addFilter(_SqlglotFilter())
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:

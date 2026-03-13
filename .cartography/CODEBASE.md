@@ -1,6 +1,6 @@
 # CODEBASE.md — Cartographer Living Context
-> Generated: 2026-03-13T14:29:37.039016+00:00 | Repo: C:\Users\henokt\AppData\Local\Temp\cartographer_3eb9jl08
-> Git commit: e149b8017fc09c97111e58cb44dbcec29b65a86b
+> Generated: 2026-03-13T15:38:35.331396+00:00 | Repo: C:\Users\henokt\AppData\Local\Temp\cartographer_wl2qpp1h
+> Git commit: 19f03ea69f72f58f84a7a625b8bf759250b85127
 
 ---
 
@@ -14,11 +14,11 @@ This codebase contains **1107 analysed source files** across 1 inferred domains.
 
 These modules are imported most frequently — changes here have the highest blast radius.
 
-- `dg_deployments\local\dagster.yaml` (score: 0.0335)
-- `src\ol_superset\ol_superset\lib\utils.py` (score: 0.0053)
-- `packages\ol-orchestrate-lib\src\ol_orchestrate\resources\secrets\vault.py` (score: 0.0044)
-- `packages\ol-orchestrate-lib\src\ol_orchestrate\lib\constants.py` (score: 0.0027)
-- `packages\ol-orchestrate-lib\src\ol_orchestrate\resources\api_client.py` (score: 0.0023)
+- `dg_deployments\local\dagster.yaml` (score: 0.0078)
+- `dataset:source` (score: 0.0074)
+- `dataset:cleaned` (score: 0.0067)
+- `dataset:renamed` (score: 0.0042)
+- `dataset:most_recent_source` (score: 0.0039)
 
 ---
 

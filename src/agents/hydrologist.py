@@ -158,15 +158,23 @@ class Hydrologist:
 
             ext = fpath.suffix.lower()
 
-            if ext == ".py":
-                py_findings.extend(self._py_flow.analyse_file(fpath, repo_path))
-                config_edges.extend(self._dag_cfg.analyse(fpath))
+            try:
+                if ext == ".py":
+                    py_findings.extend(self._py_flow.analyse_file(fpath, repo_path))
+                    config_edges.extend(self._dag_cfg.analyse(fpath))
 
-            elif ext == ".sql":
-                sql_deps.extend(self._sql_lin.analyse_file(fpath, repo_root=repo_path))
+                elif ext == ".sql":
+                    sql_deps.extend(self._sql_lin.analyse_file(fpath, repo_root=repo_path))
 
-            elif ext in {".yaml", ".yml"}:
-                config_edges.extend(self._dag_cfg.analyse(fpath))
+                elif ext in {".yaml", ".yml"}:
+                    config_edges.extend(self._dag_cfg.analyse(fpath))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "hydrologist_file_failed",
+                    path=rel_path,
+                    error=str(exc),
+                )
+                continue
 
         # ── Populate knowledge graph ──────────────────────────────────────────
         self._ingest_python_findings(py_findings)

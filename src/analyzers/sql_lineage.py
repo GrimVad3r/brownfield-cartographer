@@ -30,6 +30,10 @@ _DIALECTS = ["duckdb", "bigquery", "snowflake", "postgres", "spark", ""]
 _DBT_REF_RE  = re.compile(r"\{\{\s*ref\s*\(\s*['\"](\w+)['\"]\s*\)\s*\}\}")
 # dbt source() pattern: {{ source('source_name', 'table_name') }}
 _DBT_SRC_RE  = re.compile(r"\{\{\s*source\s*\(\s*['\"](\w+)['\"],\s*['\"](\w+)['\"]\s*\)\s*\}\}")
+_JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.DOTALL)
+_JINJA_STMT_RE    = re.compile(r"\{%-?.*?-?%\}", re.DOTALL)
+_JINJA_EXPR_RE    = re.compile(r"\{\{-?.*?-?\}\}", re.DOTALL)
+_JINJA_PLACEHOLDER = "__jinja__"
 
 
 class TableDependency(NamedTuple):
@@ -87,6 +91,7 @@ class SQLLineageAnalyzer:
         # Replace dbt macros with plain table names so sqlglot can parse them
         clean_sql = _DBT_REF_RE.sub(lambda m: m.group(1), raw_sql)
         clean_sql = _DBT_SRC_RE.sub(lambda m: f"{m.group(1)}__{m.group(2)}", clean_sql)
+        clean_sql = self._strip_jinja(clean_sql)
 
         # Resolve source_file path
         source_file = str(path)
@@ -115,7 +120,11 @@ class SQLLineageAnalyzer:
             ))
 
         # ── sqlglot AST analysis ────────────────────────────────────────────
-        parsed_tables = self._extract_with_sqlglot(clean_sql, dialect, source_file)
+        placeholder_count = clean_sql.count(_JINJA_PLACEHOLDER)
+        if placeholder_count > 0:
+            parsed_tables = self._extract_with_regex(clean_sql)
+        else:
+            parsed_tables = self._extract_with_sqlglot(clean_sql, dialect, source_file)
         for tbl, lineno in parsed_tables:
             # Don't double-count dbt refs already captured
             if tbl not in dbt_refs:
@@ -187,6 +196,48 @@ class SQLLineageAnalyzer:
 
         logger.warning("sqlglot_all_dialects_failed", source_file=source_file)
         return []
+
+    @staticmethod
+    def _extract_with_regex(sql: str) -> list[tuple[str, int]]:
+        """
+        Fallback table extraction for templated SQL that doesn't parse cleanly.
+        """
+        results: list[tuple[str, int]] = []
+        pattern = re.compile(r"\b(from|join)\s+([A-Za-z_][\w\.$]*)", re.IGNORECASE)
+        for match in pattern.finditer(sql):
+            table = match.group(2)
+            if table.lower() in {"select"}:
+                continue
+            if table.startswith(_JINJA_PLACEHOLDER):
+                continue
+            lineno = sql[: match.start()].count("\n") + 1
+            results.append((table, lineno))
+        return results
+
+    @staticmethod
+    def _strip_jinja(sql: str) -> str:
+        """
+        Remove Jinja/dbt templating blocks while preserving line count.
+        This reduces sqlglot parse errors on templated SQL.
+        """
+        def _replace_with_newlines(match: re.Match[str]) -> str:
+            text = match.group(0)
+            newlines = text.count("\n")
+            if newlines == 0:
+                return ""
+            return "\n" * newlines
+
+        def _replace_expr(match: re.Match[str]) -> str:
+            text = match.group(0)
+            newlines = text.count("\n")
+            if newlines == 0:
+                return _JINJA_PLACEHOLDER
+            return _JINJA_PLACEHOLDER + ("\n" * newlines)
+
+        sql = _JINJA_COMMENT_RE.sub(_replace_with_newlines, sql)
+        sql = _JINJA_STMT_RE.sub(_replace_with_newlines, sql)
+        sql = _JINJA_EXPR_RE.sub(_replace_expr, sql)
+        return sql
 
     @staticmethod
     def _qualified_name(table: exp.Table) -> str | None:
