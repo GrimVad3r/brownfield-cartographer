@@ -131,6 +131,9 @@ class DBTSchemaParser:
             logger.warning("dbt_yaml_parse_error", path=str(path), error=str(exc))
             return {}
 
+        if not isinstance(data, dict):
+            return {}
+
         result: dict[str, Any] = {
             "source_file": str(path),
             "models": [],
@@ -139,16 +142,28 @@ class DBTSchemaParser:
 
         # Models section
         for model in data.get("models", []):
+            if not isinstance(model, dict):
+                continue
+            columns = model.get("columns", [])
+            if not isinstance(columns, list):
+                columns = []
             result["models"].append({
                 "name":        model.get("name", ""),
                 "description": model.get("description", ""),
-                "columns":     [c.get("name") for c in model.get("columns", [])],
+                "columns":     [c.get("name") for c in columns if isinstance(c, dict)],
             })
 
         # Sources section
         for source in data.get("sources", []):
+            if not isinstance(source, dict):
+                continue
             source_name = source.get("name", "")
-            for table in source.get("tables", []):
+            tables = source.get("tables", [])
+            if not isinstance(tables, list):
+                tables = []
+            for table in tables:
+                if not isinstance(table, dict):
+                    continue
                 result["sources"].append({
                     "source":      source_name,
                     "table":       table.get("name", ""),

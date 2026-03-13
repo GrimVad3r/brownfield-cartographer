@@ -74,11 +74,20 @@ class Semanticist:
                 return openai.OpenAI(api_key=self._settings.openai_api_key)
             except ImportError:
                 logger.warning("openai_sdk_not_installed")
+        elif self._settings.lmstudio_base_url:
+            try:
+                import openai
+                return openai.OpenAI(
+                    base_url=self._settings.lmstudio_base_url,
+                    api_key=self._settings.lmstudio_api_key or "lm-studio",
+                )
+            except ImportError:
+                logger.warning("openai_sdk_not_installed")
 
         logger.warning(
             "no_llm_key_configured",
             detail="Semanticist will produce placeholder purpose statements. "
-                   "Set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env to enable LLM analysis.",
+                   "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or LMSTUDIO_BASE_URL in .env to enable LLM analysis.",
         )
         return None
 

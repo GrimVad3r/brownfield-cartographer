@@ -168,11 +168,33 @@ cp .env.example .env
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | Recommended | Enables Semanticist LLM analysis |
 | `OPENAI_API_KEY` | Alternative | OpenAI fallback for Semanticist |
+| `LMSTUDIO_BASE_URL` | Optional | LM Studio OpenAI-compatible base URL (e.g. http://localhost:1234/v1) |
+| `LMSTUDIO_API_KEY` | Optional | LM Studio API key (can be `lm-studio`) |
+| `BULK_LLM_MODEL` | Optional | Model ID for bulk purpose extraction |
+| `SYNTHESIS_LLM_MODEL` | Optional | Model ID for Day-One synthesis |
 | `GITHUB_TOKEN` | For private repos | GitHub PAT for private repo cloning |
 | `MAX_REPO_SIZE_MB` | Optional | Max repo size (default: 500 MB) |
 | `LOG_LEVEL` | Optional | DEBUG/INFO/WARNING (default: INFO) |
 
 > ⚠️ **Never commit your `.env` file.** It is git-ignored by default.
+
+---
+
+### LM Studio (Local LLM)
+
+If LM Studio is running with an OpenAI-compatible server:
+
+```bash
+export LMSTUDIO_BASE_URL=http://localhost:1234/v1
+export LMSTUDIO_API_KEY=lm-studio
+export BULK_LLM_MODEL=mistralai/ministral-3-14b-reasoning
+export SYNTHESIS_LLM_MODEL=mistralai/ministral-3-14b-reasoning
+```
+
+Then run `cartographer analyze ...` as usual.
+
+---
+
 
 ---
 

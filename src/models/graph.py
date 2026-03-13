@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None   = None
     openai_api_key: str | None      = None
     openrouter_api_key: str | None  = None
+    lmstudio_base_url: str | None   = None
+    lmstudio_api_key: str | None    = None
     bulk_llm_model: str             = "claude-haiku-4-5-20251001"
     synthesis_llm_model: str        = "claude-sonnet-4-6"
 
@@ -59,13 +61,24 @@ class Settings(BaseSettings):
     def has_llm(self) -> bool:
         """Return True if at least one LLM API key is configured."""
         return any(
-            [self.anthropic_api_key, self.openai_api_key, self.openrouter_api_key]
+            [
+                self.anthropic_api_key,
+                self.openai_api_key,
+                self.openrouter_api_key,
+                self.lmstudio_base_url,
+            ]
         )
 
     def redacted(self) -> dict[str, Any]:
         """Return a copy of the settings with secret values masked (safe to log)."""
         d = self.model_dump()
-        for key in ("anthropic_api_key", "openai_api_key", "openrouter_api_key", "github_token"):
+        for key in (
+            "anthropic_api_key",
+            "openai_api_key",
+            "openrouter_api_key",
+            "lmstudio_api_key",
+            "github_token",
+        ):
             if d.get(key):
                 d[key] = "***"
         return d
